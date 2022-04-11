@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::io::{self, Read, Write};
 use std::time::Duration;
@@ -7,7 +8,7 @@ use std::os::unix::io::AsRawFd;
 use libc::{self};
 
 /// Sends a chunk of data from one FD to another
-fn drain<A: AsRawFd, B: AsRawFd>(from: &mut A, to: &mut B) -> io::Result<usize> {
+fn drain<A: AsRawFd, B: AsRawFd>(from: & A, to: & B) -> io::Result<usize> {
     let from_fd = from.as_raw_fd();
     let to_fd = to.as_raw_fd();
     let null_offset = std::ptr::null_mut::<libc::loff_t>();
@@ -67,7 +68,7 @@ fn main() {
     
     // Open TCP connection
     write_line(&mut tty, b"TCP, ...").unwrap();
-    let mut connection = loop {
+    let connection = loop {
         match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
             Ok(connection) => break connection,
             Err(err) => {
@@ -84,26 +85,60 @@ fn main() {
     // Get handles for stdin/stdout pipes
     // TODO: Make sure the way we do this avoids rust re-locking them on every access
     // TODO: Fallback to alternative drain function if they are not pipes?
-    let mut stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
 
     // Setup for FD polling
-    let mut fds = [
+    let mut poll_fds = [
         libc::pollfd { fd: stdin.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: connection.as_raw_fd(), events: libc::POLLIN, revents: 0 },
     ];
+
+    let fd_mapping = HashMap::from([
+        (stdin.as_raw_fd(), connection.as_raw_fd() ),
+        (connection.as_raw_fd(), stdout.as_raw_fd() ),
+    ]);
     
     // Stream data
-    unsafe { loop {
-        libc::poll(&mut fds[0], fds.len() as libc::nfds_t, -1);
-        // TODO: Handle end-of-file and broken pipes appropriately.
+    while (poll_fds[0].events != 0) && (poll_fds[1].events != 0) {
+        unsafe { libc::poll(&mut poll_fds[0], poll_fds.len()as libc::nfds_t, -1); }
         
-        if (& fds[0]).revents & libc::POLLIN != 0 {
-            drain(&mut stdin, &mut connection).expect("Failed receiving data");
-        }
+        for poll_fd in &mut poll_fds {
+            let src_fd = poll_fd.fd;
+            let dst_fd = fd_mapping[&src_fd];
 
-        if (& fds[1]).revents & libc::POLLIN != 0 {
-            drain(&mut connection, &mut stdout).expect("Failed sending data");
+            // TODO: Properly handle simultaneous events (other than POLLHUP and POLLIN).
+            // Filter down to a single event (preferring read/write over errors)
+            let event_bit = poll_fd.revents & !(poll_fd.revents - 1);
+
+            // TODO: Also half-close TCP stream on errors?
+            match event_bit {
+                0 => {},
+                libc::POLLIN => {
+                    match drain(&src_fd, &dst_fd) {
+                        Ok(0) => {
+                            // FIXME: Need to actually remove from poll array (due to continued POLLHUP events)
+                            poll_fd.events = 0;
+                            // TODO: Print error (in debug mode only?)
+                            // write!(&mut tty, "{} EOF\r\n", src_fd);
+                        },
+                        Ok(_n) => {
+                            // TODO: Print event in debug mode only
+                            // write!(&mut tty, "{} -> {}: {}b\r\n", src_fd, dst_fd, _n);
+                        },
+                        Err(_err) => {
+                            poll_fd.events = 0;
+                            // TODO: Print error (in debug mode only?)
+                            // write!(&mut tty, "drain(...) failed: {}\r\n", _err);
+                        }
+                    }
+                },
+                _n => {
+                    // TODO: Print error (in debug mode only?)
+                    // write!(&mut tty, "poll(...) returned {}\r\n", _n);
+                    return;
+                },
+            }
         }
-    } }
+    }
 }
