@@ -53,25 +53,25 @@ fn main() {
     let mut tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").expect("Could not open TTY");
 
     // Resolve host name to IP
-    write_line(&mut tty, b"1/3: DNS...").unwrap();
+    write_line(&mut tty, b"DNS, ...").unwrap();
     let host_port = (host, port);
     let addr = loop {
         match host_port.to_socket_addrs() {
             Ok(mut addrs) => break addrs.next().unwrap(),
             Err(err) => {
-                write_line(&mut tty, format!("1/3: DNS, {}", err).as_bytes()).unwrap();
+                write_line(&mut tty, format!("DNS, {}", err).as_bytes()).unwrap();
                 std::thread::sleep(Duration::from_millis(1000))
             },
         };
     };
     
     // Open TCP connection
-    write_line(&mut tty, b"2/3: TCP...").unwrap();
+    write_line(&mut tty, b"TCP, ...").unwrap();
     let mut connection = loop {
         match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
             Ok(connection) => break connection,
             Err(err) => {
-                write_line(&mut tty, format!("2/3: TCP, {}", err).as_bytes()).unwrap();
+                write_line(&mut tty, format!("TCP, {}", err).as_bytes()).unwrap();
                 std::thread::sleep(Duration::from_millis(1000))
             },
         };
@@ -79,8 +79,7 @@ fn main() {
     let _ = connection.set_nodelay(true);
     
     // Clear TTY output now that connection is up.
-    // TODO: Consider removing this, as it relies on being overwritten by the SSH command
-    write_line(&mut tty, b"3/3: SSH...\r").unwrap();
+    write_line(&mut tty, b"").unwrap();
     
     // Get handles for stdin/stdout pipes
     // TODO: Make sure the way we do this avoids rust re-locking them on every access
